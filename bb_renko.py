@@ -4,7 +4,7 @@ import talib
 import pyrenko
 from logging import Logger
 from catalyst import run_algorithm
-from catalyst.api import symbol, order_target_percent, get_datetime, record
+from catalyst.api import symbol, order_target_percent, get_datetime, record, get_open_orders
 from catalyst.exchange.utils.stats_utils import extract_transactions
 import matplotlib.pyplot as plt
 
@@ -15,16 +15,16 @@ log = Logger(NAMESPACE)
 
 
 def write_cvs(data):
-    if order_vol == order_volume[0]:
-        with open('results.csv', 'a') as f:
-            writer = csv.DictWriter(f, fieldnames=['OrderVolume', "TotalReturn", "StartingCash", "EndingCash",
-                                                   'TradesClosed'])
+    if order_vol == order_volume[0] and stop == stop_loss[0]:
+        with open('results_trig.csv', 'w') as f:
+            writer = csv.DictWriter(f, fieldnames=['OrderVolume', 'StopLoss', "TotalReturn", "StartingCash",
+                                                   "EndingCash", 'TradesClosed', 'MaxDrawdown'])
             writer.writeheader()
 
-    with open('results.csv', 'a') as f:
+    with open('results_trig.csv', 'a') as f:
         writer = csv.writer(f)
-        writer.writerow((data['OrderVolume'], data['TotalReturn'], data['StartingCash'],
-                         data['EndingCash'], data['TradesClosed']))
+        writer.writerow((data['OrderVolume'], data['StopLoss'], data['TotalReturn'], data['StartingCash'],
+                         data['EndingCash'], data['TradesClosed'], data['MaxDrawdown']))
 
 
 def initialize(context):
@@ -39,6 +39,9 @@ def initialize(context):
     context.open_trigger = [-1, 1, 1]
     context.is_open = False
     context.num_trades = 0
+    context.set_commission(maker=0.001, taker=0.002)
+    context.set_slippage(slippage=0.001)
+    context.order_price = None
 
 
 def handle_data(context, data):
@@ -95,18 +98,24 @@ def handle_data(context, data):
     if context.is_open == False:
         if last_dir == context.open_trigger and bb_range > 500:
         # if current <= lowerband:
-            print('Block is ', optimal_brick)
-            order_target_percent(context.asset, order_vol, limit_price=current*1.05)
+            order_target_percent(context.asset, order_vol, limit_price=current)
             print('Position opened at {}'.format(current))
             context.is_open = True
+            context.order_price = get_open_orders(context.asset)[0].limit
 
 
     else:
+        if current <= context.order_price * stop and stop != 0:
+            order_target_percent(context.asset, 0, limit_price=current*0.99)
+            print('StopLoss {}'.format(int(current)))
+            context.is_open = False
+            context.num_trades += 1
+            return
+
         if last_dir == context.close_trigger:
         # if current >= upperband:
-            print('Block is ', optimal_brick)
             print('Position closed at {}'.format(current))
-            order_target_percent(context.asset, 0, limit_price=current*0.95)
+            order_target_percent(context.asset, 0, limit_price=current)
             context.model = pyrenko.renko()
             context.is_open = False
 
@@ -120,7 +129,7 @@ def handle_data(context, data):
 def analyze(context, perf):
     print('Total return: ' + str(perf.algorithm_period_return[-1]))
     print('Sortino coef: ' + str(perf.sortino[-1]))
-    print('Max drawdown: ' + str(perf.max_drawdown))
+    print('Max drawdown: ' + str(np.min(perf.max_drawdown)))
     print('Alpha: ' + str(perf.alpha[-1]))
     print('Beta: ' + str(perf.beta[-1]))
     print('Starting cash:' + str(perf.starting_cash[0]))
@@ -128,10 +137,12 @@ def analyze(context, perf):
     print('Number of trades:' + str(int(perf.num_trades[-1])))
 
     csv_data = {'OrderVolume': order_vol,
+                'StopLoss': stop,
                 'TotalReturn': perf.algorithm_period_return[-1],
                 'StartingCash': perf.starting_cash[0],
                 'EndingCash': perf.cash[-1],
-                'TradesClosed': perf.num_trades[-1]}
+                'TradesClosed': perf.num_trades[-1],
+                'MaxDrawdown': np.min(perf.max_drawdown)}
 
     write_cvs(csv_data)
 
@@ -189,19 +200,20 @@ def analyze(context, perf):
 if __name__ == '__main__':
 
     order_volume = [0.1, 0.25, 0.5, 1]
+    stop_loss = [0.9975, 0.995, 0.99, 0.975, 0.95, 0.925, 0.90, 0]
 
     for order_vol in order_volume:
-
-        run_algorithm(
-            capital_base=20000,
-            data_frequency='minute',
-            initialize=initialize,
-            handle_data=handle_data,
-            analyze=analyze,
-            exchange_name='binance',
-            algo_namespace=NAMESPACE,
-            quote_currency='usdt',
-            live=False,
-            start=pd.to_datetime('2018-1-1', utc=True),
-            end=pd.to_datetime('2018-1-7', utc=True)
-        )
+        for stop in stop_loss:
+            run_algorithm(
+                capital_base=20000,
+                data_frequency='minute',
+                initialize=initialize,
+                handle_data=handle_data,
+                analyze=analyze,
+                exchange_name='binance',
+                algo_namespace=NAMESPACE,
+                quote_currency='usdt',
+                live=False,
+                start=pd.to_datetime('2018-1-1', utc=True),
+                end=pd.to_datetime('2018-1-3', utc=True)
+            )
