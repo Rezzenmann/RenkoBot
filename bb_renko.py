@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import talib
 import pyrenko
+from datetime import datetime
 from logging import Logger
 from catalyst import run_algorithm
 from catalyst.api import symbol, order_target_percent, get_datetime, record, get_open_orders
@@ -15,16 +16,17 @@ log = Logger(NAMESPACE)
 
 
 def write_cvs(data):
+    name = 'results_{}.csv'.format(str(datetime.now()))
     if order_vol == order_volume[0] and stop == stop_loss[0]:
-        with open('results_trig.csv', 'w') as f:
-            writer = csv.DictWriter(f, fieldnames=['OrderVolume', 'StopLoss', "TotalReturn", "StartingCash",
-                                                   "EndingCash", 'TradesClosed', 'MaxDrawdown'])
+        with open(name, 'w') as f:
+            writer = csv.DictWriter(f, fieldnames=['OrderVolume', 'StopLoss', "NetProfit", "TradesClosed",
+                                                   "PercentProfitable %", 'ProfitFactor', 'MaxDrawdown (%)', 'AverageTrade ($)'])
             writer.writeheader()
 
-    with open('results_trig.csv', 'a') as f:
+    with open(name, 'a') as f:
         writer = csv.writer(f)
-        writer.writerow((data['OrderVolume'], data['StopLoss'], data['TotalReturn'], data['StartingCash'],
-                         data['EndingCash'], data['TradesClosed'], data['MaxDrawdown']))
+        writer.writerow((data['OrderVolume'], data['StopLoss'], data['NetProfit'], data['TradesClosed'],
+                         data['ProfitPercent'], data['ProfitFactor'], data['MaxDrawdown'], data['AverageTrade']))
 
 
 def initialize(context):
@@ -32,7 +34,7 @@ def initialize(context):
     context.asset = symbol('btc_usdt')
     context.tf = '1H'
     context.atr_time = 51
-    context.bb = 7
+    context.bb = 8
     context.model = pyrenko.renko()
 
     context.close_trigger = [1, -1, -1]
@@ -42,6 +44,7 @@ def initialize(context):
     context.set_commission(maker=0.001, taker=0.002)
     context.set_slippage(slippage=0.001)
     context.order_price = None
+    context.order_result = []
 
 
 def handle_data(context, data):
@@ -59,7 +62,6 @@ def handle_data(context, data):
     starting_cash = context.portfolio.starting_cash
     current = data.current(context.asset, 'close')
     price = data.current(context.asset, 'price')
-
     last_price = data.history(context.asset,
                               'price',
                               bar_count=context.atr_time - 1,
@@ -80,13 +82,15 @@ def handle_data(context, data):
     upperband, middleband, lowerband = upperband[-1], middleband[-1], lowerband[-1]
     bb_range = upperband - lowerband
 
-
     record(price=price,
            starting_cash = starting_cash,
            cash=context.portfolio.cash,
            upperband=upperband,
            middleband=middleband,
-           lowerband=lowerband)
+           lowerband=lowerband,
+           num_trades=context.num_trades,
+           order_result=context.order_result
+           )
 
     context.model = pyrenko.renko()
     optimal_brick = context.model.set_brick_size(HLC_history=hlc_data)
@@ -97,33 +101,41 @@ def handle_data(context, data):
 
     if context.is_open == False:
         if last_dir == context.open_trigger and bb_range > 500:
-        # if current <= lowerband:
-            order_target_percent(context.asset, order_vol, limit_price=current)
+            order_target_percent(context.asset, order_vol, limit_price=current*1.001)
             print('Position opened at {}'.format(current))
             context.is_open = True
             context.order_price = get_open_orders(context.asset)[0].limit
 
-
     else:
         if current <= context.order_price * stop and stop != 0:
-            order_target_percent(context.asset, 0, limit_price=current*0.99)
+            order_target_percent(context.asset, 0, limit_price=current)
             print('StopLoss {}'.format(int(current)))
             context.is_open = False
             context.num_trades += 1
-            return
-
-        if last_dir == context.close_trigger:
-        # if current >= upperband:
-            print('Position closed at {}'.format(current))
-            order_target_percent(context.asset, 0, limit_price=current)
-            context.model = pyrenko.renko()
-            context.is_open = False
-
-            context.num_trades +=1
+            price_diff = current - context.order_price
+            context.order_result.append(price_diff)
 
             record(
-                num_trades=context.num_trades
+                num_trades=context.num_trades,
+                order_result=context.order_result
             )
+
+        else:
+            if last_dir == context.close_trigger:
+                print('Position closed at {}'.format(current))
+                order_target_percent(context.asset, 0, limit_price=current)
+                context.model = pyrenko.renko()
+                context.is_open = False
+
+                price_diff = current - context.order_price
+                context.order_result.append(price_diff)
+
+                context.num_trades +=1
+
+                record(
+                    num_trades=context.num_trades,
+                    order_result=context.order_result
+                )
 
 
 def analyze(context, perf):
@@ -136,71 +148,91 @@ def analyze(context, perf):
     print('Ending cash:' + str(perf.cash[-1]))
     print('Number of trades:' + str(int(perf.num_trades[-1])))
 
+    positive_trades = []
+    negative_trades = []
+
+    net_profit = sum(perf.order_result[-1])
+    profit_percent = (perf.starting_cash[0] + net_profit) / perf.starting_cash[0]
+
+    for trade in perf.order_result[-1]:
+        if trade >= 0:
+            positive_trades.append(trade)
+        else:
+            negative_trades.append(trade)
+
+    profit_factor = sum(positive_trades) / sum(negative_trades)
+
+    if len(perf.order_result[-1]) > 0:
+        average_trade = sum(perf.order_result[-1])/len(perf.order_result[-1])
+
     csv_data = {'OrderVolume': order_vol,
                 'StopLoss': stop,
-                'TotalReturn': perf.algorithm_period_return[-1],
-                'StartingCash': perf.starting_cash[0],
-                'EndingCash': perf.cash[-1],
+                'NetProfit': round(net_profit, 1),
                 'TradesClosed': perf.num_trades[-1],
-                'MaxDrawdown': np.min(perf.max_drawdown)}
+                'ProfitPercent': round(profit_percent, 2),
+                'ProfitFactor': round(profit_factor, 2),
+                'MaxDrawdown': round(np.min(perf.max_drawdown), 3),
+                'AverageTrade': round(average_trade,1)}
 
     write_cvs(csv_data)
 
-    # exchange = list(context.exchanges.values())[0]
-    # quote_currency = exchange.quote_currency.upper()
-    #
-    # ax1 = plt.subplot(311)
-    # perf.loc[:, ['price', 'upperband', 'middleband', 'lowerband']].plot(
-    #     ax=ax1,
-    #     label='Price')
-    #
-    # ax1.set_ylabel('{asset}\n({quote})'.format(
-    #     asset=context.asset.symbol,
-    #     quote=quote_currency
-    # ))
-    # start, end = ax1.get_ylim()
-    # ax1.yaxis.set_ticks(np.arange(start, end, (end - start) / 5))
-    #
-    # ax2 = plt.subplot(312)
-    # perf.loc[:, 'portfolio_value'].plot(ax=ax2)
-    # ax2.set_ylabel('Portfolio\nValue\n({})'.format(quote_currency))
-    #
-    # ax3 = plt.subplot(313)
-    # perf.loc[:, 'price'].plot(ax=ax3, label='Price')
-    #
-    # ax3.set_ylabel('{asset}\n({quote})'.format(
-    #     asset=context.asset.symbol, quote=quote_currency
-    # ))
-    #
-    # transaction_df = extract_transactions(perf)
-    #
-    # if not transaction_df.empty:
-    #     buy_df = transaction_df[transaction_df['amount'] > 0]
-    #     sell_df = transaction_df[transaction_df['amount'] < 0]
-    #     ax3.scatter(
-    #         buy_df.index.to_pydatetime(),
-    #         perf.loc[buy_df.index.floor('1 min'), 'price'],
-    #         marker='^',
-    #         s=100,
-    #         c='green',
-    #         label=''
-    #     )
-    #
-    #     ax3.scatter(
-    #         sell_df.index.to_pydatetime(),
-    #         perf.loc[sell_df.index.floor('1 min'), 'price'],
-    #         marker='v',
-    #         s=100,
-    #         c='red',
-    #         label=''
-    #     )
-    # # plt.show()
+    exchange = list(context.exchanges.values())[0]
+    quote_currency = exchange.quote_currency.upper()
+
+    ax1 = plt.subplot(311)
+    perf.loc[:, ['price', 'upperband', 'middleband', 'lowerband']].plot(
+        ax=ax1,
+        label='Price')
+
+    ax1.set_ylabel('{asset}\n({quote})'.format(
+        asset=context.asset.symbol,
+        quote=quote_currency
+    ))
+    start, end = ax1.get_ylim()
+    ax1.yaxis.set_ticks(np.arange(start, end, (end - start) / 5))
+
+    ax2 = plt.subplot(312)
+    perf.loc[:, 'portfolio_value'].plot(ax=ax2)
+    ax2.set_ylabel('Portfolio\nValue\n({})'.format(quote_currency))
+
+    ax3 = plt.subplot(313)
+    perf.loc[:, 'price'].plot(ax=ax3, label='Price')
+
+    ax3.set_ylabel('{asset}\n({quote})'.format(
+        asset=context.asset.symbol, quote=quote_currency
+    ))
+
+    transaction_df = extract_transactions(perf)
+
+    if not transaction_df.empty:
+        buy_df = transaction_df[transaction_df['amount'] > 0]
+        sell_df = transaction_df[transaction_df['amount'] < 0]
+        ax3.scatter(
+            buy_df.index.to_pydatetime(),
+            perf.loc[buy_df.index.floor('1 min'), 'price'],
+            marker='^',
+            s=100,
+            c='green',
+            label=''
+        )
+
+        ax3.scatter(
+            sell_df.index.to_pydatetime(),
+            perf.loc[sell_df.index.floor('1 min'), 'price'],
+            marker='v',
+            s=100,
+            c='red',
+            label=''
+        )
+
+    # uncomment to show charts after
+    # plt.show()
 
 
 if __name__ == '__main__':
 
-    order_volume = [0.1, 0.25, 0.5, 1]
-    stop_loss = [0.9975, 0.995, 0.99, 0.975, 0.95, 0.925, 0.90, 0]
+    order_volume = [0.1] #, 0.25, 0.5, 1]
+    stop_loss = [0.9975] #, 0.995, 0.99, 0.95, 0.925, 0.90, 0]
 
     for order_vol in order_volume:
         for stop in stop_loss:
