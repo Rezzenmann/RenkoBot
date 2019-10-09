@@ -231,8 +231,8 @@ def analyze(context, perf):
 
 if __name__ == '__main__':
 
-    order_volume = [0.1] #, 0.25, 0.5, 1]
-    stop_loss = [0.9975] #, 0.995, 0.99, 0.95, 0.925, 0.90, 0]
+    order_volume = [0.1, 0.25, 0.5, 1]
+    stop_loss = [0.9975, 0.995, 0.99, 0.95, 0.925, 0.90, 0]
 
     for order_vol in order_volume:
         for stop in stop_loss:
