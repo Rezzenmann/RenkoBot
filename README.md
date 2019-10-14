@@ -2,7 +2,7 @@
 
 Crypto trading strategy based on Renko + Bollinger bands.
 
-Main file  - bb_renko.py (Jupyter Notebook)
+Main file  - bb_renko.py
 
 Renko module - pyrenko.py
 
