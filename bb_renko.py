@@ -8,25 +8,33 @@ from catalyst import run_algorithm
 from catalyst.api import symbol, order_target_percent, get_datetime, record, get_open_orders
 from catalyst.exchange.utils.stats_utils import extract_transactions
 import matplotlib.pyplot as plt
+import psycopg2
 
 import csv
+from peewee import *
+
+
+db = PostgresqlDatabase(database='test_renko', user='postgres',
+                        password='1', host='localhost')
+
+
+class RenkoDB(Model):
+    order_volume = FloatField()
+    stop_loss = FloatField()
+    net_profit = FloatField()
+    trades_closed = FloatField()
+    percentage_profit = FloatField()
+    profit_factor = FloatField()
+    max_drawdown = FloatField()
+    avarage_trade = FloatField()
+    date = DateTimeField()
+
+    class Meta:
+        database = db
+
 
 NAMESPACE = 'RenkoBB'
 log = Logger(NAMESPACE)
-
-
-def write_cvs(data):
-    name = 'results_{}.csv'.format(str(datetime.now()))
-    if order_vol == order_volume[0] and stop == stop_loss[0]:
-        with open(name, 'w') as f:
-            writer = csv.DictWriter(f, fieldnames=['OrderVolume', 'StopLoss', "NetProfit", "TradesClosed",
-                                                   "PercentProfitable %", 'ProfitFactor', 'MaxDrawdown (%)', 'AverageTrade ($)'])
-            writer.writeheader()
-
-    with open(name, 'a') as f:
-        writer = csv.writer(f)
-        writer.writerow((data['OrderVolume'], data['StopLoss'], data['NetProfit'], data['TradesClosed'],
-                         data['ProfitPercent'], data['ProfitFactor'], data['MaxDrawdown'], data['AverageTrade']))
 
 
 def initialize(context):
@@ -165,74 +173,80 @@ def analyze(context, perf):
     if len(perf.order_result[-1]) > 0:
         average_trade = sum(perf.order_result[-1])/len(perf.order_result[-1])
 
-    csv_data = {'OrderVolume': order_vol,
-                'StopLoss': stop,
-                'NetProfit': round(net_profit, 1),
-                'TradesClosed': perf.num_trades[-1],
-                'ProfitPercent': round(profit_percent, 2),
-                'ProfitFactor': round(profit_factor, 2),
-                'MaxDrawdown': round(np.min(perf.max_drawdown), 3),
-                'AverageTrade': round(average_trade,1)}
+    # Exporting data to Database
 
-    write_cvs(csv_data)
+    with db.atomic():
+        name = RenkoDB.create(
+            order_volume=order_vol,
+            stop_loss=stop,
+            net_profit=round(net_profit, 1),
+            trades_closed=perf.num_trades[-1],
+            percentage_profit=round(profit_percent, 2),
+            profit_factor=round(profit_factor, 2),
+            max_drawdown=round(np.min(perf.max_drawdown), 3),
+            avarage_trade=round(average_trade,1),
+            date=datetime.now())
 
-    exchange = list(context.exchanges.values())[0]
-    quote_currency = exchange.quote_currency.upper()
-
-    ax1 = plt.subplot(311)
-    perf.loc[:, ['price', 'upperband', 'middleband', 'lowerband']].plot(
-        ax=ax1,
-        label='Price')
-
-    ax1.set_ylabel('{asset}\n({quote})'.format(
-        asset=context.asset.symbol,
-        quote=quote_currency
-    ))
-    start, end = ax1.get_ylim()
-    ax1.yaxis.set_ticks(np.arange(start, end, (end - start) / 5))
-
-    ax2 = plt.subplot(312)
-    perf.loc[:, 'portfolio_value'].plot(ax=ax2)
-    ax2.set_ylabel('Portfolio\nValue\n({})'.format(quote_currency))
-
-    ax3 = plt.subplot(313)
-    perf.loc[:, 'price'].plot(ax=ax3, label='Price')
-
-    ax3.set_ylabel('{asset}\n({quote})'.format(
-        asset=context.asset.symbol, quote=quote_currency
-    ))
-
-    transaction_df = extract_transactions(perf)
-
-    if not transaction_df.empty:
-        buy_df = transaction_df[transaction_df['amount'] > 0]
-        sell_df = transaction_df[transaction_df['amount'] < 0]
-        ax3.scatter(
-            buy_df.index.to_pydatetime(),
-            perf.loc[buy_df.index.floor('1 min'), 'price'],
-            marker='^',
-            s=100,
-            c='green',
-            label=''
-        )
-
-        ax3.scatter(
-            sell_df.index.to_pydatetime(),
-            perf.loc[sell_df.index.floor('1 min'), 'price'],
-            marker='v',
-            s=100,
-            c='red',
-            label=''
-        )
-
-    # uncomment to show charts after
-    # plt.show()
+    # exchange = list(context.exchanges.values())[0]
+    # quote_currency = exchange.quote_currency.upper()
+    #
+    # ax1 = plt.subplot(311)
+    # perf.loc[:, ['price', 'upperband', 'middleband', 'lowerband']].plot(
+    #     ax=ax1,
+    #     label='Price')
+    #
+    # ax1.set_ylabel('{asset}\n({quote})'.format(
+    #     asset=context.asset.symbol,
+    #     quote=quote_currency
+    # ))
+    # start, end = ax1.get_ylim()
+    # ax1.yaxis.set_ticks(np.arange(start, end, (end - start) / 5))
+    #
+    # ax2 = plt.subplot(312)
+    # perf.loc[:, 'portfolio_value'].plot(ax=ax2)
+    # ax2.set_ylabel('Portfolio\nValue\n({})'.format(quote_currency))
+    #
+    # ax3 = plt.subplot(313)
+    # perf.loc[:, 'price'].plot(ax=ax3, label='Price')
+    #
+    # ax3.set_ylabel('{asset}\n({quote})'.format(
+    #     asset=context.asset.symbol, quote=quote_currency
+    # ))
+    #
+    # transaction_df = extract_transactions(perf)
+    #
+    # if not transaction_df.empty:
+    #     buy_df = transaction_df[transaction_df['amount'] > 0]
+    #     sell_df = transaction_df[transaction_df['amount'] < 0]
+    #     ax3.scatter(
+    #         buy_df.index.to_pydatetime(),
+    #         perf.loc[buy_df.index.floor('1 min'), 'price'],
+    #         marker='^',
+    #         s=100,
+    #         c='green',
+    #         label=''
+    #     )
+    #
+    #     ax3.scatter(
+    #         sell_df.index.to_pydatetime(),
+    #         perf.loc[sell_df.index.floor('1 min'), 'price'],
+    #         marker='v',
+    #         s=100,
+    #         c='red',
+    #           label=''
+    #     )
+    #
+    # # uncomment to show charts after
+    # # plt.show()
 
 
 if __name__ == '__main__':
 
     order_volume = [0.1, 0.25, 0.5, 1]
     stop_loss = [0.9975, 0.995, 0.99, 0.95, 0.925, 0.90, 0]
+
+    db.connect()
+    db.create_tables([RenkoDB])
 
     for order_vol in order_volume:
         for stop in stop_loss:
@@ -247,5 +261,6 @@ if __name__ == '__main__':
                 quote_currency='usdt',
                 live=False,
                 start=pd.to_datetime('2018-1-1', utc=True),
-                end=pd.to_datetime('2018-1-3', utc=True)
+                end=pd.to_datetime('2018-1-4', utc=True)
             )
+    db.close()
