@@ -5,32 +5,52 @@ import pyrenko
 from datetime import datetime
 from logging import Logger
 from catalyst import run_algorithm
-from catalyst.api import symbol, order_target_percent, get_datetime, record, get_open_orders
+from catalyst.api import symbol, order_target_percent, get_datetime, record, get_open_orders, get_order
 from catalyst.exchange.utils.stats_utils import extract_transactions
 import matplotlib.pyplot as plt
 import psycopg2
 
-import csv
 from peewee import *
 
 
-db = PostgresqlDatabase(database='test_renko', user='postgres',
+db = PostgresqlDatabase(database='exteneded_renko', user='postgres',
                         password='1', host='localhost')
 
 
-class RenkoDB(Model):
-    order_volume = FloatField()
-    stop_loss = FloatField()
-    net_profit = FloatField()
-    trades_closed = FloatField()
-    percentage_profit = FloatField()
-    profit_factor = FloatField()
-    max_drawdown = FloatField()
-    avarage_trade = FloatField()
-    date = DateTimeField()
+class TradeSession(Model):
+    algo_name = CharField()
 
     class Meta:
         database = db
+
+
+class Position(TradeSession):
+    name = CharField()
+    is_live = BooleanField()
+    started = DateTimeField()
+    open_price = FloatField()
+    finished = DateTimeField()
+    closed_price = FloatField()
+    amount = FloatField()
+    closed_by = CharField()
+    pair = CharField()
+    side = CharField()
+    exchange = CharField()
+
+    class Meta:
+        database = db
+
+
+# class OHLCV(Model):
+#     date = DateTimeField()
+#     open = FloatField()
+#     high = FloatField()
+#     low = FloatField()
+#     close = FloatField()
+#     volume = FloatField()
+#
+#     class Meta:
+#         database = db
 
 
 NAMESPACE = 'RenkoBB'
@@ -53,6 +73,10 @@ def initialize(context):
     context.set_slippage(slippage=0.001)
     context.order_price = None
     context.order_result = []
+    context.close_price = None
+    context.started = None
+    context.finished = None
+    context.amount = None
 
 
 def handle_data(context, data):
@@ -107,85 +131,107 @@ def handle_data(context, data):
     prev_dir = context.model.get_renko_directions()
     last_dir = prev_dir[-4:-1]
 
-    if context.is_open == False:
+    if not context.is_open:
         if last_dir == context.open_trigger and bb_range > 500:
             order_target_percent(context.asset, order_vol, limit_price=current*1.001)
-            print('Position opened at {}'.format(current))
+            context.order_price = get_open_orders(context.asset)[-1].limit
             context.is_open = True
-            context.order_price = get_open_orders(context.asset)[0].limit
+            context.started = get_open_orders(context.asset)[-1].dt
+            context.order_price = get_open_orders(context.asset)[-1].limit
+            context.amount = get_open_orders(context.asset)[-1].amount
+
 
     else:
         if current <= context.order_price * stop and stop != 0:
-            order_target_percent(context.asset, 0, limit_price=current)
-            print('StopLoss {}'.format(int(current)))
+            close_id = order_target_percent(context.asset, 0, limit_price=current)
+            get_order(close_id)
             context.is_open = False
             context.num_trades += 1
             price_diff = current - context.order_price
             context.order_result.append(price_diff)
 
+            close_time = get_order(close_id).dt
+            close_price = get_order(close_id).limit
+            closed_by = 'Stop Loss'
             record(
                 num_trades=context.num_trades,
                 order_result=context.order_result
             )
 
+            with db.atomic():
+                pos = Position.create(
+                    algo_name=algo,
+                    name='RenkoBB',
+                    is_live=live,
+                    started=context.started,
+                    open_price=context.order_price,
+                    finished=close_time,
+                    closed_price=close_price,
+                    amount=context.amount,
+                    closed_by=closed_by,
+                    pair='BTCUSDT',
+                    side='Buy',
+                    exchange=exchange_name)
+
         else:
             if last_dir == context.close_trigger:
-                print('Position closed at {}'.format(current))
-                order_target_percent(context.asset, 0, limit_price=current)
+                close_id = order_target_percent(context.asset, 0, limit_price=current)
                 context.model = pyrenko.renko()
                 context.is_open = False
 
                 price_diff = current - context.order_price
                 context.order_result.append(price_diff)
-
-                context.num_trades +=1
+                context.num_trades += 1
+                close_time = get_order(close_id).dt
+                close_price = get_order(close_id).limit
+                closed_by = 'Algo'
 
                 record(
                     num_trades=context.num_trades,
                     order_result=context.order_result
                 )
+                with db.atomic():
+                    pos = Position.create(
+                        algo_name=algo,
+                        name='RenkoBB',
+                        is_live=live,
+                        started=context.started,
+                        open_price=context.open_price,
+                        finished=close_time,
+                        closed_price=close_price,
+                        amount=context.amount,
+                        closed_by=closed_by,
+                        pair='BTCUSDT',
+                        side='Buy',
+                        exchange=exchange_name)
 
 
 def analyze(context, perf):
-    print('Total return: ' + str(perf.algorithm_period_return[-1]))
-    print('Sortino coef: ' + str(perf.sortino[-1]))
-    print('Max drawdown: ' + str(np.min(perf.max_drawdown)))
-    print('Alpha: ' + str(perf.alpha[-1]))
-    print('Beta: ' + str(perf.beta[-1]))
-    print('Starting cash:' + str(perf.starting_cash[0]))
-    print('Ending cash:' + str(perf.cash[-1]))
-    print('Number of trades:' + str(int(perf.num_trades[-1])))
-
-    positive_trades = []
-    negative_trades = []
-
-    net_profit = sum(perf.order_result[-1])
-    profit_percent = (perf.starting_cash[0] + net_profit) / perf.starting_cash[0]
-
-    for trade in perf.order_result[-1]:
-        if trade >= 0:
-            positive_trades.append(trade)
-        else:
-            negative_trades.append(trade)
-
-    profit_factor = sum(positive_trades) / sum(negative_trades)
-
-    if len(perf.order_result[-1]) > 0:
-        average_trade = sum(perf.order_result[-1])/len(perf.order_result[-1])
-
-    # Exporting data to Database
-
-    with db.atomic():
-        name = RenkoDB.create(
-            order_volume=order_vol,
-            stop_loss=stop,
-            net_profit=round(net_profit, 1),
-            trades_closed=perf.num_trades[-1],
-            percentage_profit=round(profit_percent, 2),
-            profit_factor=round(profit_factor, 2),
-            max_drawdown=round(np.min(perf.max_drawdown), 3),
-            avarage_trade=round(average_trade,1),
-            date=datetime.now())
+    # print('Total return: ' + str(perf.algorithm_period_return[-1]))
+    # print('Sortino coef: ' + str(perf.sortino[-1]))
+    # print('Max drawdown: ' + str(np.min(perf.max_drawdown)))
+    # print('Alpha: ' + str(perf.alpha[-1]))
+    # print('Beta: ' + str(perf.beta[-1]))
+    # print('Starting cash:' + str(perf.starting_cash[0]))
+    # print('Ending cash:' + str(perf.cash[-1]))
+    # print('Number of trades:' + str(int(perf.num_trades[-1])))
+    #
+    # positive_trades = []
+    # negative_trades = []
+    #
+    # net_profit = sum(perf.order_result[-1])
+    # profit_percent = (perf.starting_cash[0] + net_profit) / perf.starting_cash[0]
+    #
+    # for trade in perf.order_result[-1]:
+    #     if trade >= 0:
+    #         positive_trades.append(trade)
+    #     else:
+    #         negative_trades.append(trade)
+    #
+    # profit_factor = sum(positive_trades) / sum(negative_trades)
+    #
+    # if len(perf.order_result[-1]) > 0:
+    #     average_trade = sum(perf.order_result[-1])/len(perf.order_result[-1])
 
     # exchange = list(context.exchanges.values())[0]
     # quote_currency = exchange.quote_currency.upper()
@@ -242,25 +288,32 @@ def analyze(context, perf):
 
 if __name__ == '__main__':
 
-    order_volume = [0.1, 0.25, 0.5, 1]
-    stop_loss = [0.9975, 0.995, 0.99, 0.95, 0.925, 0.90, 0]
+    order_volume = [0.1] # , 0.25, 0.5, 1]
+    stop_loss = [0.9975, 0.995, 0.99] # , 0.95, 0.925, 0.90, 0]
 
     db.connect()
-    db.create_tables([RenkoDB])
+    db.create_tables([TradeSession, Position])
+    exchange_name = 'binance'
+    live = False
+
+    with db.atomic():
+        algo = TradeSession.create(
+            algo_name='RenkoBB')
 
     for order_vol in order_volume:
         for stop in stop_loss:
+            started=datetime.now()
             run_algorithm(
                 capital_base=20000,
                 data_frequency='minute',
                 initialize=initialize,
                 handle_data=handle_data,
                 analyze=analyze,
-                exchange_name='binance',
+                exchange_name=exchange_name,
                 algo_namespace=NAMESPACE,
                 quote_currency='usdt',
                 live=False,
                 start=pd.to_datetime('2018-1-1', utc=True),
-                end=pd.to_datetime('2018-1-4', utc=True)
+                end=pd.to_datetime('2018-1-1', utc=True)
             )
     db.close()
