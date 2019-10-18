@@ -168,9 +168,21 @@ def analyze(context, perf):
     if len(perf.order_result[-1]) > 0:
         average_trade = sum(perf.order_result[-1])/len(perf.order_result[-1])
 
-    trade_session(db, order_volume=order_vol, stop_loss=stop, net_profit=net_profit, trades_closed=context.num_trades,
-                  avarage_trade=average_trade, percentage_profit=profit_percent, profit_factor=profit_factor,
-                  max_drawdown=np.min(perf.max_drawdown), date=datetime.now())
+    if order_vol == 0.1 and stop == 0.9975:
+        q = (TradeSession
+             .update({'order_volume': order_vol, 'stop_loss':stop, 'net_profit':net_profit,
+                      'trades_closed':context.num_trades, 'avarage_trade':average_trade,
+                      'percentage_profit':profit_percent, 'profit_factor':profit_factor,
+                      'max_drawdown':np.min(perf.max_drawdown), 'date':datetime.now()})
+             .where(TradeSession.net_profit is None))
+        q.execute()
+
+    else:
+
+        trade_session(db, order_volume=order_vol, stop_loss=stop, net_profit=net_profit,
+                      trades_closed=context.num_trades,
+                      avarage_trade=average_trade, percentage_profit=profit_percent, profit_factor=profit_factor,
+                      max_drawdown=np.min(perf.max_drawdown), date=datetime.now())
 
     # exchange = list(context.exchanges.values())[0]
     # quote_currency = exchange.quote_currency.upper()
@@ -231,6 +243,8 @@ if __name__ == '__main__':
     stop_loss = [0.9975, 0.995, 0.99] # , 0.95, 0.925, 0.90, 0]
 
     connection(db)
+
+    trade_session(db)
 
     exchange_name = 'binance'
     live = False

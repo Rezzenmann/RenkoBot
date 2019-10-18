@@ -7,22 +7,22 @@ db = PostgresqlDatabase(database='exteneded_renko', user='postgres',
 
 class TradeSession(Model):
     algo_name = CharField()
-    order_volume = FloatField()
-    stop_loss = FloatField()
-    net_profit = FloatField()
-    trades_closed = FloatField()
-    percentage_profit = FloatField()
-    profit_factor = FloatField()
-    max_drawdown = FloatField()
-    avarage_trade = FloatField()
-    date = DateTimeField()
+    order_volume = FloatField(null=True)
+    stop_loss = FloatField(null=True)
+    net_profit = FloatField(null=True)
+    trades_closed = FloatField(null=True)
+    percentage_profit = FloatField(null=True)
+    profit_factor = FloatField(null=True)
+    max_drawdown = FloatField(null=True)
+    avarage_trade = FloatField(null=True)
+    date = DateTimeField(null=True)
 
     class Meta:
         database = db
 
 
 class Position(Model):
-    name = CharField()
+    name = ForeignKeyField(TradeSession)
     is_live = BooleanField()
     started = DateTimeField()
     open_price = FloatField()
@@ -55,10 +55,27 @@ def connection(database):
     database.create_tables([TradeSession, Position])
 
 
+def trade_session(database, date="2018-01-01 02:50:00", order_volume=None, stop_loss=None, net_profit=None, trades_closed=None,
+                  percentage_profit=None, profit_factor=None, max_drawdown=None, avarage_trade=None):
+
+    with database.atomic():
+        global algo
+        algo = TradeSession.create(algo_name='RenkoBB',
+                                   order_volume=order_volume,
+                                   stop_loss=stop_loss,
+                                   net_profit=net_profit,
+                                   trades_closed=trades_closed,
+                                   percentage_profit=percentage_profit,
+                                   profit_factor=profit_factor,
+                                   max_drawdown=max_drawdown,
+                                   avarage_trade=avarage_trade,
+                                   date=date)
+
+
 def positions(database, live, start, open_price, finish, close, amount, closed_by, exchange):
     with database.atomic():
         pos = Position.create(
-            name='RenkoBB',
+            name=algo,
             is_live=live,
             started=start,
             open_price=open_price,
@@ -71,19 +88,4 @@ def positions(database, live, start, open_price, finish, close, amount, closed_b
             exchange=exchange)
 
 
-def trade_session(database, order_volume, stop_loss, net_profit, trades_closed,
-                  percentage_profit, profit_factor, max_drawdown, avarage_trade,
-                  date):
-
-    with database.atomic():
-        algo = TradeSession.create(algo_name='RenkoBB',
-                                   order_volume=order_volume,
-                                   stop_loss=stop_loss,
-                                   net_profit=net_profit,
-                                   trades_closed=trades_closed,
-                                   percentage_profit=percentage_profit,
-                                   profit_factor=profit_factor,
-                                   max_drawdown=max_drawdown,
-                                   avarage_trade=avarage_trade,
-                                   date=date)
 
