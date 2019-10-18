@@ -8,50 +8,8 @@ from catalyst import run_algorithm
 from catalyst.api import symbol, order_target_percent, get_datetime, record, get_open_orders, get_order
 from catalyst.exchange.utils.stats_utils import extract_transactions
 import matplotlib.pyplot as plt
-import psycopg2
 
-from peewee import *
-
-
-db = PostgresqlDatabase(database='exteneded_renko', user='postgres',
-                        password='1', host='localhost')
-
-
-class TradeSession(Model):
-    algo_name = CharField()
-
-    class Meta:
-        database = db
-
-
-class Position(TradeSession):
-    name = CharField()
-    is_live = BooleanField()
-    started = DateTimeField()
-    open_price = FloatField()
-    finished = DateTimeField()
-    closed_price = FloatField()
-    amount = FloatField()
-    closed_by = CharField()
-    pair = CharField()
-    side = CharField()
-    exchange = CharField()
-
-    class Meta:
-        database = db
-
-
-# class OHLCV(Model):
-#     date = DateTimeField()
-#     open = FloatField()
-#     high = FloatField()
-#     low = FloatField()
-#     close = FloatField()
-#     volume = FloatField()
-#
-#     class Meta:
-#         database = db
-
+from database import *
 
 NAMESPACE = 'RenkoBB'
 log = Logger(NAMESPACE)
@@ -140,11 +98,9 @@ def handle_data(context, data):
             context.order_price = get_open_orders(context.asset)[-1].limit
             context.amount = get_open_orders(context.asset)[-1].amount
 
-
     else:
         if current <= context.order_price * stop and stop != 0:
             close_id = order_target_percent(context.asset, 0, limit_price=current)
-            get_order(close_id)
             context.is_open = False
             context.num_trades += 1
             price_diff = current - context.order_price
@@ -158,21 +114,9 @@ def handle_data(context, data):
                 order_result=context.order_result
             )
 
-            with db.atomic():
-                pos = Position.create(
-                    algo_name=algo,
-                    name='RenkoBB',
-                    is_live=live,
-                    started=context.started,
-                    open_price=context.order_price,
-                    finished=close_time,
-                    closed_price=close_price,
-                    amount=context.amount,
-                    closed_by=closed_by,
-                    pair='BTCUSDT',
-                    side='Buy',
-                    exchange=exchange_name)
-
+            positions(db, live=live, start=context.started, open_price=context.order_price,
+                      finish=close_time, close=close_price, amount=context.amount,
+                      closed_by=closed_by, exchange=exchange_name)
         else:
             if last_dir == context.close_trigger:
                 close_id = order_target_percent(context.asset, 0, limit_price=current)
@@ -190,23 +134,14 @@ def handle_data(context, data):
                     num_trades=context.num_trades,
                     order_result=context.order_result
                 )
-                with db.atomic():
-                    pos = Position.create(
-                        algo_name=algo,
-                        name='RenkoBB',
-                        is_live=live,
-                        started=context.started,
-                        open_price=context.open_price,
-                        finished=close_time,
-                        closed_price=close_price,
-                        amount=context.amount,
-                        closed_by=closed_by,
-                        pair='BTCUSDT',
-                        side='Buy',
-                        exchange=exchange_name)
+
+                positions(db, live=live, start=context.started, open_price=context.order_price,
+                          finish=close_time, close=close_price, amount=context.amount,
+                          closed_by=closed_by, exchange=exchange_name)
 
 
 def analyze(context, perf):
+
     # print('Total return: ' + str(perf.algorithm_period_return[-1]))
     # print('Sortino coef: ' + str(perf.sortino[-1]))
     # print('Max drawdown: ' + str(np.min(perf.max_drawdown)))
@@ -215,23 +150,27 @@ def analyze(context, perf):
     # print('Starting cash:' + str(perf.starting_cash[0]))
     # print('Ending cash:' + str(perf.cash[-1]))
     # print('Number of trades:' + str(int(perf.num_trades[-1])))
-    #
-    # positive_trades = []
-    # negative_trades = []
-    #
-    # net_profit = sum(perf.order_result[-1])
-    # profit_percent = (perf.starting_cash[0] + net_profit) / perf.starting_cash[0]
-    #
-    # for trade in perf.order_result[-1]:
-    #     if trade >= 0:
-    #         positive_trades.append(trade)
-    #     else:
-    #         negative_trades.append(trade)
-    #
-    # profit_factor = sum(positive_trades) / sum(negative_trades)
-    #
-    # if len(perf.order_result[-1]) > 0:
-    #     average_trade = sum(perf.order_result[-1])/len(perf.order_result[-1])
+
+    positive_trades = []
+    negative_trades = []
+
+    net_profit = sum(perf.order_result[-1])
+    profit_percent = (perf.starting_cash[0] + net_profit) / perf.starting_cash[0]
+
+    for trade in perf.order_result[-1]:
+        if trade >= 0:
+            positive_trades.append(trade)
+        else:
+            negative_trades.append(trade)
+
+    profit_factor = sum(positive_trades) / sum(negative_trades)
+
+    if len(perf.order_result[-1]) > 0:
+        average_trade = sum(perf.order_result[-1])/len(perf.order_result[-1])
+
+    trade_session(db, order_volume=order_vol, stop_loss=stop, net_profit=net_profit, trades_closed=context.num_trades,
+                  avarage_trade=average_trade, percentage_profit=profit_percent, profit_factor=profit_factor,
+                  max_drawdown=np.min(perf.max_drawdown), date=datetime.now())
 
     # exchange = list(context.exchanges.values())[0]
     # quote_currency = exchange.quote_currency.upper()
@@ -291,14 +230,10 @@ if __name__ == '__main__':
     order_volume = [0.1] # , 0.25, 0.5, 1]
     stop_loss = [0.9975, 0.995, 0.99] # , 0.95, 0.925, 0.90, 0]
 
-    db.connect()
-    db.create_tables([TradeSession, Position])
+    connection(db)
+
     exchange_name = 'binance'
     live = False
-
-    with db.atomic():
-        algo = TradeSession.create(
-            algo_name='RenkoBB')
 
     for order_vol in order_volume:
         for stop in stop_loss:
@@ -316,4 +251,3 @@ if __name__ == '__main__':
                 start=pd.to_datetime('2018-1-1', utc=True),
                 end=pd.to_datetime('2018-1-1', utc=True)
             )
-    db.close()
