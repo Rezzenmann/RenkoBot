@@ -128,7 +128,7 @@ def handle_data(context, data):
 
             positions(db, live=live, start=context.started, open_price=context.order_price,
                       finish=close_time, close=close_price, amount=context.amount,
-                      closed_by=closed_by, exchange=exchange_name)
+                      closed_by=closed_by, exchange=exchange_name, timestamp=datetime.timestamp(get_datetime()))
         else:
             if last_dir == context.close_trigger:
                 close_id = order_target_percent(context.asset, 0, limit_price=current)
@@ -149,7 +149,7 @@ def handle_data(context, data):
 
                 positions(db, live=live, start=context.started, open_price=context.order_price,
                           finish=close_time, close=close_price, amount=context.amount,
-                          closed_by=closed_by, exchange=exchange_name)
+                          closed_by=closed_by, exchange=exchange_name, timestamp=datetime.timestamp(get_datetime()))
 
 
 def analyze(context, perf):

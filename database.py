@@ -33,6 +33,7 @@ class Position(Model):
     pair = CharField()
     side = CharField()
     exchange = CharField()
+    timestamp = TimestampField()
 
     class Meta:
         database = db
@@ -72,7 +73,7 @@ def trade_session(database, date="2018-01-01 02:50:00", order_volume=None, stop_
                                    date=date)
 
 
-def positions(database, live, start, open_price, finish, close, amount, closed_by, exchange):
+def positions(database, live, start, open_price, finish, close, amount, closed_by, exchange, timestamp):
     with database.atomic():
         pos = Position.create(
             name=algo,
@@ -85,7 +86,8 @@ def positions(database, live, start, open_price, finish, close, amount, closed_b
             closed_by=closed_by,
             pair='BTCUSDT',
             side='Buy',
-            exchange=exchange)
+            exchange=exchange,
+            timestamp=timestamp)
 
 
 def get_ohlcv(database, open, high, low, close, volume):
