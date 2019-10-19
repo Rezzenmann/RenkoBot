@@ -39,12 +39,12 @@ class Position(Model):
 
 
 class OHLCV(Model):
-    date = DateTimeField()
     open = FloatField()
     high = FloatField()
     low = FloatField()
     close = FloatField()
     volume = FloatField()
+
 
     class Meta:
         database = db
@@ -52,7 +52,7 @@ class OHLCV(Model):
 
 def connection(database):
     database.connect()
-    database.create_tables([TradeSession, Position])
+    database.create_tables([TradeSession, Position, OHLCV])
 
 
 def trade_session(database, date="2018-01-01 02:50:00", order_volume=None, stop_loss=None, net_profit=None, trades_closed=None,
@@ -88,4 +88,12 @@ def positions(database, live, start, open_price, finish, close, amount, closed_b
             exchange=exchange)
 
 
+def get_ohlcv(database, open, high, low, close, volume):
+    with database.atomic():
+        ohlcv = OHLCV.create(
+            open=open,
+            high=high,
+            low=low,
+            close=close,
+            volume=volume)
 

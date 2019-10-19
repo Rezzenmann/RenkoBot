@@ -35,6 +35,7 @@ def initialize(context):
     context.started = None
     context.finished = None
     context.amount = None
+    context.ohlcv = {}
 
 
 def handle_data(context, data):
@@ -58,6 +59,16 @@ def handle_data(context, data):
                               frequency=context.tf
                               )
 
+    if context.i % 60 == 0:
+        ohlcv_data = data.history(context.asset,
+                                  fields=['open', 'high', 'low', 'close', 'volume'],
+                                  bar_count=1,
+                                  frequency='H')
+
+        get_ohlcv(database=db, open=ohlcv_data.open, high=ohlcv_data.high,
+        low=ohlcv_data.low, close=ohlcv_data.close,
+        volume=ohlcv_data.volume)
+
     bb_data = data.history(context.asset,
                            'close',
                            bar_count=context.bb,
@@ -67,6 +78,8 @@ def handle_data(context, data):
                             fields=['high', 'low', 'close'],
                             bar_count=context.atr_time,
                             frequency=context.tf)
+
+
 
     upperband, middleband, lowerband = talib.BBANDS(bb_data, timeperiod=context.bb - 1, nbdevup=2, nbdevdn=2, matype=0)
     upperband, middleband, lowerband = upperband[-1], middleband[-1], lowerband[-1]
@@ -79,8 +92,7 @@ def handle_data(context, data):
            middleband=middleband,
            lowerband=lowerband,
            num_trades=context.num_trades,
-           order_result=context.order_result
-           )
+           order_result=context.order_result)
 
     context.model = pyrenko.renko()
     optimal_brick = context.model.set_brick_size(HLC_history=hlc_data)
@@ -240,14 +252,17 @@ def analyze(context, perf):
 if __name__ == '__main__':
 
     order_volume = [0.1] # , 0.25, 0.5, 1]
-    stop_loss = [0.9975, 0.995, 0.99] # , 0.95, 0.925, 0.90, 0]
+    stop_loss = [0.9975, 0.995] # , 0.99 , 0.95, 0.925, 0.90, 0]
 
     connection(db)
-
     trade_session(db)
+
+    start_date = '2018-1-1'
+    end_date = '2018-1-2'
 
     exchange_name = 'binance'
     live = False
+
 
     for order_vol in order_volume:
         for stop in stop_loss:
@@ -262,6 +277,6 @@ if __name__ == '__main__':
                 algo_namespace=NAMESPACE,
                 quote_currency='usdt',
                 live=False,
-                start=pd.to_datetime('2018-1-1', utc=True),
-                end=pd.to_datetime('2018-1-1', utc=True)
+                start=pd.to_datetime(start_date, utc=True),
+                end=pd.to_datetime(end_date, utc=True)
             )
