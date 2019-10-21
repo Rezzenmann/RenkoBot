@@ -35,7 +35,7 @@ def initialize(context):
     context.started = None
     context.finished = None
     context.amount = None
-    context.ohlcv = {}
+    context.closed_by = None
 
 
 def handle_data(context, data):
@@ -59,15 +59,15 @@ def handle_data(context, data):
                               frequency=context.tf
                               )
 
-    if context.i % 60 == 0:
-        ohlcv_data = data.history(context.asset,
+    if order_vol == 0.1 and stop == 0.9975:
+        if context.i % 60 == 0:
+            ohlcv_data = data.history(context.asset,
                                   fields=['open', 'high', 'low', 'close', 'volume'],
                                   bar_count=1,
                                   frequency='H')
 
-        get_ohlcv(database=db, open=ohlcv_data.open, high=ohlcv_data.high,
-        low=ohlcv_data.low, close=ohlcv_data.close,
-        volume=ohlcv_data.volume)
+            get_ohlcv(database=db, exchange=exchange_name, pair='BTCUSDT', open=ohlcv_data.open, high=ohlcv_data.high,
+                        low=ohlcv_data.low, close=ohlcv_data.close, volume=ohlcv_data.volume, timestamp=datetime.timestamp(get_datetime()))
 
     bb_data = data.history(context.asset,
                            'close',
@@ -104,11 +104,14 @@ def handle_data(context, data):
     if not context.is_open:
         if last_dir == context.open_trigger and bb_range > 500:
             order_target_percent(context.asset, order_vol, limit_price=current*1.001)
-            context.order_price = get_open_orders(context.asset)[-1].limit
             context.is_open = True
             context.started = get_open_orders(context.asset)[-1].dt
             context.order_price = get_open_orders(context.asset)[-1].limit
             context.amount = get_open_orders(context.asset)[-1].amount
+
+            positions(db, type=algo_type, side='Buy',start=context.started, open_price=context.order_price,
+                      finish=None, close=None, amount=context.amount, status='Open',
+                      closed_by=None, exchange=exchange_name, timestamp=datetime.timestamp(get_datetime()))
 
     else:
         if current <= context.order_price * stop and stop != 0:
@@ -118,17 +121,22 @@ def handle_data(context, data):
             price_diff = current - context.order_price
             context.order_result.append(price_diff)
 
-            close_time = get_order(close_id).dt
-            close_price = get_order(close_id).limit
-            closed_by = 'Stop Loss'
+            context.finished = get_order(close_id).dt
+            context.close_price = get_order(close_id).limit
+            context.closed_by = 'Stop Loss'
             record(
                 num_trades=context.num_trades,
                 order_result=context.order_result
             )
 
-            positions(db, live=live, start=context.started, open_price=context.order_price,
-                      finish=close_time, close=close_price, amount=context.amount,
-                      closed_by=closed_by, exchange=exchange_name, timestamp=datetime.timestamp(get_datetime()))
+            query = Position.select(fn.MAX(Position.id))
+
+            p = (Position
+                 .update({'finished': context.finished, 'closed_price': context.close_price, 'closed_by': context.closed_by, 'status': 'Closed'})
+                 .where(Position.id == query.scalar()))
+            p.execute()
+
+
         else:
             if last_dir == context.close_trigger:
                 close_id = order_target_percent(context.asset, 0, limit_price=current)
@@ -138,18 +146,21 @@ def handle_data(context, data):
                 price_diff = current - context.order_price
                 context.order_result.append(price_diff)
                 context.num_trades += 1
-                close_time = get_order(close_id).dt
-                close_price = get_order(close_id).limit
-                closed_by = 'Algo'
+                context.finished = get_order(close_id).dt
+                context.close_price = get_order(close_id).limit
+                context.closed_by = 'Algo'
 
                 record(
                     num_trades=context.num_trades,
                     order_result=context.order_result
                 )
+                query = Position.select(fn.MAX(Position.id))
 
-                positions(db, live=live, start=context.started, open_price=context.order_price,
-                          finish=close_time, close=close_price, amount=context.amount,
-                          closed_by=closed_by, exchange=exchange_name, timestamp=datetime.timestamp(get_datetime()))
+                p = (Position
+                     .update({'finished': context.finished, 'closed_price': context.close_price, 'closed_by': context.closed_by, 'status': 'Closed'})
+                     .where(Position.id == query.scalar()))
+                p.execute(db)
+
 
 
 def analyze(context, perf):
@@ -181,8 +192,9 @@ def analyze(context, perf):
         average_trade = sum(perf.order_result[-1])/len(perf.order_result[-1])
 
     if order_vol == 0.1 and stop == 0.9975:
+
         q = (TradeSession
-             .update({'order_volume': order_vol, 'stop_loss':stop, 'net_profit':net_profit,
+             .update({'order_volume': order_vol, 'stop_loss':stop, 'take_profit': None, 'net_profit':net_profit,
                       'trades_closed':context.num_trades, 'avarage_trade':average_trade,
                       'percentage_profit':profit_percent, 'profit_factor':profit_factor,
                       'max_drawdown':np.min(perf.max_drawdown), 'date':datetime.now()})
@@ -191,7 +203,7 @@ def analyze(context, perf):
 
     else:
 
-        trade_session(db, order_volume=order_vol, stop_loss=stop, net_profit=net_profit,
+        trade_session(db, order_volume=order_vol, stop_loss=stop, take_profit=None, net_profit=net_profit,
                       trades_closed=context.num_trades,
                       avarage_trade=average_trade, percentage_profit=profit_percent, profit_factor=profit_factor,
                       max_drawdown=np.min(perf.max_drawdown), date=datetime.now())
@@ -252,17 +264,22 @@ def analyze(context, perf):
 if __name__ == '__main__':
 
     order_volume = [0.1] # , 0.25, 0.5, 1]
-    stop_loss = [0.9975, 0.995] # , 0.99 , 0.95, 0.925, 0.90, 0]
-
-    connection(db)
-    trade_session(db)
+    stop_loss = [0.9975] # , 0.99 , 0.95, 0.925, 0.90, 0]
 
     start_date = '2018-1-1'
     end_date = '2018-1-2'
+    algo_type = None
 
     exchange_name = 'binance'
     live = False
+    if not live:
+        algo_type = 'Backtest'
+    else:
+        algo_type = 'Live'
 
+
+    connection(db)
+    trade_session(db)
 
     for order_vol in order_volume:
         for stop in stop_loss:
@@ -280,3 +297,4 @@ if __name__ == '__main__':
                 start=pd.to_datetime(start_date, utc=True),
                 end=pd.to_datetime(end_date, utc=True)
             )
+    db.close()
