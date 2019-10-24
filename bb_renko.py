@@ -8,8 +8,11 @@ from catalyst import run_algorithm
 from catalyst.api import symbol, order_target_percent, get_datetime, record, get_open_orders, get_order
 from catalyst.exchange.utils.stats_utils import extract_transactions
 import matplotlib.pyplot as plt
-
+from time import time
 from database import *
+import multiprocessing
+
+from threading import  Thread
 
 NAMESPACE = 'RenkoBB'
 log = Logger(NAMESPACE)
@@ -61,6 +64,7 @@ def handle_data(context, data):
 
     if order_vol == 0.1 and stop == 0.9975:
         if context.i % 60 == 0:
+
             ohlcv_data = data.history(context.asset,
                                   fields=['open', 'high', 'low', 'close', 'volume'],
                                   bar_count=1,
@@ -191,22 +195,26 @@ def analyze(context, perf):
     if len(perf.order_result[-1]) > 0:
         average_trade = sum(perf.order_result[-1])/len(perf.order_result[-1])
 
-    if order_vol == 0.1 and stop == 0.9975:
+    # query_ts = TradeSession.select(fn.MAX(TradeSession.id))
+    # query_scalar = query_ts.scalar()
 
-        q = (TradeSession
+    # if  query_scalar == 1:
+    query_ts = TradeSession.select(fn.MAX(TradeSession.id))
+
+    q = (TradeSession
              .update({'order_volume': order_vol, 'stop_loss':stop, 'take_profit': None, 'net_profit':net_profit,
                       'trades_closed':context.num_trades, 'avarage_trade':average_trade,
                       'percentage_profit':profit_percent, 'profit_factor':profit_factor,
                       'max_drawdown':np.min(perf.max_drawdown), 'date':datetime.now()})
-             .where(TradeSession.net_profit is None))
-        q.execute()
+             .where(TradeSession.id == query_ts.scalar()))
+    q.execute(db)
 
-    else:
-
-        trade_session(db, order_volume=order_vol, stop_loss=stop, take_profit=None, net_profit=net_profit,
-                      trades_closed=context.num_trades,
-                      avarage_trade=average_trade, percentage_profit=profit_percent, profit_factor=profit_factor,
-                      max_drawdown=np.min(perf.max_drawdown), date=datetime.now())
+    # else:
+    #
+    #     trade_session(db, order_volume=order_vol, stop_loss=stop, take_profit=None, net_profit=net_profit,
+    #                   trades_closed=context.num_trades,
+    #                   avarage_trade=average_trade, percentage_profit=profit_percent, profit_factor=profit_factor,
+    #                   max_drawdown=np.min(perf.max_drawdown), date=datetime.now())
 
     # exchange = list(context.exchanges.values())[0]
     # quote_currency = exchange.quote_currency.upper()
@@ -261,29 +269,15 @@ def analyze(context, perf):
     # # plt.show()
 
 
-if __name__ == '__main__':
 
-    order_volume = [0.1] # , 0.25, 0.5, 1]
-    stop_loss = [0.9975] # , 0.99 , 0.95, 0.925, 0.90, 0]
-
-    start_date = '2018-1-1'
-    end_date = '2018-1-2'
-    algo_type = None
-
-    exchange_name = 'binance'
-    live = False
-    if not live:
-        algo_type = 'Backtest'
-    else:
-        algo_type = 'Live'
-
-
-    connection(db)
-    trade_session(db)
-
+def main(params):
+    global order_vol
+    global stop
+    order_volume = params[0]
+    stop_loss = params[-1]
     for order_vol in order_volume:
         for stop in stop_loss:
-            started=datetime.now()
+            trade_session(db)
             run_algorithm(
                 capital_base=20000,
                 data_frequency='minute',
@@ -297,4 +291,38 @@ if __name__ == '__main__':
                 start=pd.to_datetime(start_date, utc=True),
                 end=pd.to_datetime(end_date, utc=True)
             )
+
+
+if __name__ == '__main__':
+
+    t1 = time()
+    order_volume = [0.1]  # , 0.25, 0.5, 1]
+    stop_loss = [0.925]  # , 0.99, 0.95, 0.925, 0.90, 0]
+
+    params_to_run = [[order_volume] + [stop_loss]]
+    start_date = '2018-1-1'
+    end_date = '2018-1-2'
+    algo_type = None
+
+    exchange_name = 'binance'
+    live = False
+
+    if not live:
+        algo_type = 'Backtest'
+    else:
+        algo_type = 'Live'
+
+    connection(db)
+
+    with multiprocessing.Pool(8) as p:
+        p.map(main, params_to_run)
+
+
     db.close()
+
+    t2 = time()
+    result_time = t2 - t1
+
+    with open('result.txt', 'a') as f:
+        f.write(str(result_time))
+    print(result_time)
